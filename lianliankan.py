@@ -135,7 +135,8 @@ TILE_IMAGES = [
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif")
 # PIC_PADDING = 0             # 图片与方块边缘的留白（像素），改小可让图片更满
 # PIC_RADIUS = 14             # 方块圆角半径
-PIC_PADDING = max(3, int(TILE * 0.125))
+# PIC_PADDING = max(3, int(TILE * 0.125))
+PIC_PADDING = 1
 PIC_RADIUS  = max(6, int(TILE * 0.22))
 # ============================================================
 
@@ -426,11 +427,17 @@ class LianLianKan:
 
             img = self.tile_images[kind]
             iw, ih = img.get_size()
+
             # 等比缩放，保证图片完整放进方块且不变形
-            scale = min((s - PIC_PADDING * 2) / iw,
+            # scale = min((s - PIC_PADDING * 2) / iw,
+            #             (s - PIC_PADDING * 2) / ih)
+            # nw = max(1, int(iw * scale))
+            # nh = max(1, int(ih * scale))
+            scale = max((s - PIC_PADDING * 2) / iw,
                         (s - PIC_PADDING * 2) / ih)
             nw = max(1, int(iw * scale))
             nh = max(1, int(ih * scale))
+
             pic = pygame.transform.smoothscale(img, (nw, nh))
 
             layer = pygame.Surface((s, s), pygame.SRCALPHA)
