@@ -1,0 +1,623 @@
+# -*- coding: utf-8 -*-
+"""
+连连看 —— Python + Pygame 单文件实现
+
+玩法：
+    点击两个图案相同的方块，若它们之间存在一条不超过两次转弯的通路，
+    即可消除。清空全部方块即为通关。
+
+快捷键：
+    鼠标左键  选牌 / 消除
+    R         重排
+    H         提示
+    N         新游戏
+    Esc       退出
+"""
+
+import os
+import sys
+import random
+from collections import deque
+
+import pygame
+
+# ==================== 全局配置 ====================
+ROWS, COLS = 6, 6          # 棋盘行数 / 列数（总数必须为偶数）
+DEFAULT_KINDS = 8           # 没有自定义图片时，内置字母图案的种类数
+TILE = 64                   # 每格像素大小
+MARGIN = 40                 # 棋盘外留白（给连线留空间）
+HUD_H = 84                  # 顶部信息栏高度
+
+BOARD_W = COLS * TILE
+BOARD_H = ROWS * TILE
+WIDTH = BOARD_W + MARGIN * 2
+HEIGHT = BOARD_H + MARGIN * 2 + HUD_H
+BOARD_X = MARGIN
+BOARD_Y = HUD_H + MARGIN
+
+FPS = 60
+TOTAL_TIME = 240.0          # 每局时间（秒）
+
+# ============================================================
+# ★ 可变元素②（可选）：颜色 / 标题，想换成自己风格改这里就行
+# ============================================================
+WINDOW_TITLE = "连连看 · Python + Pygame"
+BG = (26, 30, 42)           # 窗口背景色
+PANEL = (38, 44, 60)        # 棋盘底板色
+GRID_LINE = (46, 52, 70)    # 棋盘格纹色
+TEXT = (236, 240, 248)
+ACCENT = (255, 209, 102)
+HINT_COLOR = (110, 230, 255)
+# ============================================================
+
+PALETTE = [
+    (239, 71, 111),
+    (255, 193, 7),
+    (6, 214, 160),
+    (17, 138, 178),
+    (131, 56, 236),
+    (255, 140, 66),
+    (0, 187, 249),
+    (247, 37, 133),
+]
+LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+DIRS = ((-1, 0), (1, 0), (0, -1), (0, 1))
+
+FONT_NAMES = ("microsoftyahei,msyh,simhei,simsun,notosanscjksc,"
+              "notosanscjk,wenquanyimicrohei,pingfangsc,arial")
+
+
+# ============================================================
+# ★ 可变元素①：把方块图案换成你自己的图片 ★
+# ------------------------------------------------------------
+# 用法（二选一，也可以同时用）：
+#
+#   方式 A（最省事，推荐）：在本文件旁边新建一个文件夹 tiles/，
+#           把图片丢进去即可，程序会自动扫描并按文件名排序读取。
+#           支持 .png / .jpg / .jpeg / .bmp / .webp / .gif
+#
+#   方式 B：把下面的 TILE_IMAGES 填成你自己的图片路径列表。
+#
+# 说明：
+#   · 图案的"种类数"会自动等于图片数量（上限 26 种），
+#     所以你放 6 张图就有 6 种方块，不用改任何其它代码；
+#   · 图片非正方形会自动等比缩放并居中，不会被拉变形；
+#   · 建议用背景透明的 PNG，图片四周留白会自动用彩色底板兜底；
+#   · 两种方式都没有提供图片时，自动回退到内置的彩色字母方块。
+# ============================================================
+TILE_IMAGE_DIR = "tiles"    # 图片文件夹；设为 None 表示不自动扫描
+TILE_IMAGES = [
+    # 方式 B 示例（取消注释并改成你的路径即可）：
+    # "images/apple.png",
+    # "images/banana.png",
+    # "images/cherry.png",
+    # "images/grape.png",
+    # "images/lemon.png",
+    # "images/peach.png",
+]
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif")
+PIC_PADDING = 0             # 图片与方块边缘的留白（像素），改小可让图片更满
+PIC_RADIUS = 14             # 方块圆角半径
+# ============================================================
+
+
+# ==================== 工具函数 ====================
+def load_font(size, bold=False):
+    """尽量找一个支持中文的系统字体。"""
+    try:
+        path = pygame.font.match_font(FONT_NAMES, bold=bold)
+    except Exception:
+        path = None
+    if path:
+        try:
+            return pygame.font.Font(path, size)
+        except Exception:
+            pass
+    return pygame.font.Font(None, size)
+
+
+def text_color_for(bg):
+    """根据背景亮度决定用深色还是浅色字。"""
+    lum = 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2]
+    return (30, 30, 40) if lum > 140 else (250, 250, 255)
+
+
+def cell_topleft(r, c):
+    """格子 (r, c) 中方块贴图的左上角像素坐标。"""
+    return (BOARD_X + (c - 1) * TILE + 3,
+            BOARD_Y + (r - 1) * TILE + 3)
+
+
+def cell_center(r, c):
+    """格子 (r, c) 的中心像素坐标。"""
+    return (BOARD_X + (c - 1) * TILE + TILE // 2,
+            BOARD_Y + (r - 1) * TILE + TILE // 2)
+
+
+def collect_tile_image_paths():
+    """★ 汇总所有自定义图片路径（方式 A + 方式 B）。"""
+    paths = []
+    for p in TILE_IMAGES:
+        if os.path.isfile(p):
+            paths.append(p)
+        else:
+            print(f"[提示] 找不到图片：{p}")
+
+    if TILE_IMAGE_DIR and os.path.isdir(TILE_IMAGE_DIR):
+        for name in sorted(os.listdir(TILE_IMAGE_DIR)):
+            if name.lower().endswith(IMAGE_EXTS):
+                full = os.path.join(TILE_IMAGE_DIR, name)
+                if full not in paths:
+                    paths.append(full)
+    return paths
+
+
+def load_images(paths):
+    """★ 加载图片，失败的单张会被跳过而不是让程序崩溃。"""
+    imgs = []
+    for p in paths:
+        try:
+            imgs.append(pygame.image.load(p).convert_alpha())
+        except Exception as e:
+            print(f"[提示] 图片加载失败：{p} （{e}）")
+    return imgs
+
+
+# ==================== 核心算法：路径判定 ====================
+def find_path(grid, rows, cols, a, b):
+    """
+    在带一圈空边框的网格 grid 中，寻找 a -> b 的连通路径。
+
+    grid 尺寸为 (rows+2) x (cols+2)，下标 1..rows / 1..cols 是棋盘内部，
+    第 0 行/列与最后一行/列是永远为空的“外圈”，允许连线绕出去。
+    grid[r][c] == -1 表示空格。
+
+    规则：路径只能走空格（终点 b 除外），拐弯次数 <= 2。
+
+    返回：从 a 到 b 经过的所有格子坐标列表（含首尾），无解返回 None。
+    """
+    H, W = rows + 2, cols + 2
+    INF = 99
+    best = [[[INF] * 4 for _ in range(W)] for _ in range(H)]
+    parent = {}
+
+    start = (a[0], a[1], -1)
+    parent[start] = None
+    dq = deque([(a[0], a[1], -1, 0)])
+
+    while dq:
+        r, c, d, turns = dq.popleft()
+        for nd, (dr, dc) in enumerate(DIRS):
+            nr, nc = r + dr, c + dc
+            if not (0 <= nr < H and 0 <= nc < W):
+                continue
+
+            nt = turns if (d == -1 or d == nd) else turns + 1
+            if nt > 2:
+                continue
+
+            if (nr, nc) == b:
+                path = []
+                cur, seen = (r, c, d), set()
+                while cur is not None and cur not in seen:
+                    seen.add(cur)
+                    path.append((cur[0], cur[1]))
+                    cur = parent.get(cur)
+                path.reverse()
+                path.append(b)
+                return path
+
+            if grid[nr][nc] != -1:
+                continue
+
+            if nt < best[nr][nc][nd]:
+                best[nr][nc][nd] = nt
+                parent[(nr, nc, nd)] = (r, c, d)
+                dq.append((nr, nc, nd, nt))
+
+    return None
+
+
+# ==================== 游戏主体 ====================
+class LianLianKan:
+    def __init__(self):
+        pygame.init()
+        pygame.display.set_caption(WINDOW_TITLE)
+        self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
+        self.clock = pygame.time.Clock()
+
+        self.f_big = load_font(44, bold=True)
+        self.f_mid = load_font(22, bold=True)
+        self.f_small = load_font(17)
+        self.f_tile = load_font(int((TILE - 6) * 0.5), bold=True)
+
+        # ---------- ★ 加载自定义方块图片 ----------
+        image_paths = collect_tile_image_paths()
+        self.tile_images = load_images(image_paths)
+
+        if self.tile_images:
+            limit = max(2, min(len(LETTERS), ROWS * COLS // 2))
+            self.num_kinds = min(limit, len(self.tile_images))
+            self.tile_images = self.tile_images[:self.num_kinds]
+            print(f"[OK] 已加载 {self.num_kinds} 种自定义方块图案。")
+            if self.num_kinds < 4:
+                print("[提示] 图案种类偏少，建议至少 4 种，否则棋盘会显得很单调。")
+        else:
+            self.num_kinds = DEFAULT_KINDS
+            print("[提示] 未找到自定义图片，使用内置的彩色字母方块。")
+        # ------------------------------------------
+
+        self.tile_surfs = [self._make_tile_surface(k)
+                           for k in range(self.num_kinds)]
+
+        self.new_game()
+
+    # ---------- 方块贴图 ----------
+    def _make_tile_surface(self, kind):
+        """生成一张方块贴图：有图片用图片，没图片就画彩色字母。"""
+        s = TILE - 6
+        surf = pygame.Surface((s, s), pygame.SRCALPHA)
+        rect = pygame.Rect(0, 0, s, s)
+        base = PALETTE[kind % len(PALETTE)]
+
+        # 阴影
+        pygame.draw.rect(surf, (0, 0, 0, 70), rect.move(0, 3),
+                         border_radius=PIC_RADIUS)
+
+        # ==================== ★ 分支一：使用你自己的图片 ====================
+        if kind < len(self.tile_images):
+            # 彩色底板（当图片带透明区域时会露出来）
+            pygame.draw.rect(surf, base, rect, border_radius=PIC_RADIUS)
+            pygame.draw.rect(surf, tuple(min(255, v + 45) for v in base),
+                             rect.inflate(-8, -8), border_radius=PIC_RADIUS - 3,
+                             width=3)
+
+            img = self.tile_images[kind]
+            iw, ih = img.get_size()
+            # 等比缩放，保证图片完整放进方块且不变形
+            scale = min((s - PIC_PADDING * 2) / iw,
+                        (s - PIC_PADDING * 2) / ih)
+            nw = max(1, int(iw * scale))
+            nh = max(1, int(ih * scale))
+            pic = pygame.transform.smoothscale(img, (nw, nh))
+
+            layer = pygame.Surface((s, s), pygame.SRCALPHA)
+            layer.blit(pic, ((s - nw) // 2, (s - nh) // 2))
+            # 圆角遮罩，让图片四角跟底板圆角一致
+            mask = pygame.Surface((s, s), pygame.SRCALPHA)
+            pygame.draw.rect(mask, (255, 255, 255, 255), rect,
+                             border_radius=PIC_RADIUS)
+            layer.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+            surf.blit(layer, (0, 0))
+            return surf
+        # ==================================================================
+
+        # ==================== ★ 分支二：内置彩色字母方块 ====================
+        pygame.draw.rect(surf, base, rect, border_radius=PIC_RADIUS)
+        top = tuple(min(255, v + 45) for v in base)
+        pygame.draw.rect(surf, top, rect.inflate(-8, -8),
+                         border_radius=PIC_RADIUS - 3, width=3)
+
+        ch = LETTERS[kind % len(LETTERS)]
+        txt = self.f_tile.render(ch, True, text_color_for(base))
+        surf.blit(txt, txt.get_rect(center=(s // 2, s // 2)))
+        return surf
+        # ==================================================================
+
+    # ---------- 初始化 ----------
+    def new_game(self):
+        self.grid = [[-1] * (COLS + 2) for _ in range(ROWS + 2)]
+
+        total = ROWS * COLS
+        pool = []
+        for i in range(total // 2):
+            k = i % self.num_kinds
+            pool.extend((k, k))
+        random.shuffle(pool)
+
+        idx = 0
+        for r in range(1, ROWS + 1):
+            for c in range(1, COLS + 1):
+                self.grid[r][c] = pool[idx]
+                idx += 1
+
+        self.selected = None
+        self.effects = []
+        self.hint = None
+        self.hint_timer = 0.0
+        self.score = 0
+        self.time_left = TOTAL_TIME
+        self.state = "playing"
+        self.message = ""
+        self.message_timer = 0.0
+
+        self.ensure_solvable()
+
+    # ---------- 棋盘查询 ----------
+    def remaining(self):
+        return sum(1 for r in range(1, ROWS + 1)
+                   for c in range(1, COLS + 1) if self.grid[r][c] != -1)
+
+    def find_any_pair(self):
+        groups = {}
+        for r in range(1, ROWS + 1):
+            for c in range(1, COLS + 1):
+                k = self.grid[r][c]
+                if k != -1:
+                    groups.setdefault(k, []).append((r, c))
+
+        for pts in groups.values():
+            n = len(pts)
+            for i in range(n):
+                for j in range(i + 1, n):
+                    p = find_path(self.grid, ROWS, COLS, pts[i], pts[j])
+                    if p is not None:
+                        return (pts[i], pts[j], p)
+        return None
+
+    # ---------- 重排 ----------
+    def _shuffle_values(self):
+        cells = [(r, c) for r in range(1, ROWS + 1) for c in range(1, COLS + 1)
+                 if self.grid[r][c] != -1]
+        vals = [self.grid[r][c] for r, c in cells]
+        random.shuffle(vals)
+        for (r, c), v in zip(cells, vals):
+            self.grid[r][c] = v
+
+    def ensure_solvable(self):
+        for _ in range(40):
+            if self.find_any_pair() is not None:
+                return
+            self._shuffle_values()
+
+    def do_reshuffle(self):
+        if self.remaining() < 2:
+            return
+        for _ in range(60):
+            self._shuffle_values()
+            if self.find_any_pair() is not None:
+                break
+        self.selected = None
+
+    # ---------- 交互 ----------
+    def pos_to_cell(self, mx, my):
+        if not (BOARD_X <= mx < BOARD_X + BOARD_W and
+                BOARD_Y <= my < BOARD_Y + BOARD_H):
+            return None
+        c = int((mx - BOARD_X) // TILE) + 1
+        r = int((my - BOARD_Y) // TILE) + 1
+        return (r, c)
+
+    def on_click(self, pos):
+        cell = self.pos_to_cell(*pos)
+        if cell is None:
+            self.selected = None
+            return
+
+        r, c = cell
+        if self.grid[r][c] == -1:
+            self.selected = None
+            return
+
+        if self.selected is None:
+            self.selected = (r, c)
+            return
+        if self.selected == (r, c):
+            self.selected = None
+            return
+
+        a = self.selected
+        if self.grid[a[0]][a[1]] == self.grid[r][c]:
+            path = find_path(self.grid, ROWS, COLS, a, (r, c))
+            if path is not None:
+                self.clear_pair(a, (r, c), path)
+                self.selected = None
+                return
+        self.selected = (r, c)
+
+    def clear_pair(self, a, b, path):
+        kind = self.grid[a[0]][a[1]]
+        self.grid[a[0]][a[1]] = -1
+        self.grid[b[0]][b[1]] = -1
+
+        self.effects.append({"type": "path", "path": path, "t": 0.0, "life": 0.30})
+        for cell in (a, b):
+            self.effects.append({"type": "pop", "cell": cell, "kind": kind,
+                                 "t": 0.0, "life": 0.30})
+
+        self.score += 10
+
+        if self.remaining() == 0:
+            self.score += int(self.time_left) * 5
+            self.state = "won"
+        elif self.find_any_pair() is None:
+            self.do_reshuffle()
+            self.set_message("无可消对，自动重排！")
+
+    def show_hint(self):
+        pair = self.find_any_pair()
+        if pair:
+            self.hint = (pair[0], pair[1])
+            self.hint_timer = 2.0
+
+    def set_message(self, text, duration=1.6):
+        self.message = text
+        self.message_timer = duration
+
+    # ---------- 每帧更新 ----------
+    def update(self, dt):
+        for e in self.effects:
+            e["t"] += dt
+        self.effects = [e for e in self.effects if e["t"] < e["life"]]
+
+        if self.hint_timer > 0:
+            self.hint_timer -= dt
+            if self.hint_timer <= 0:
+                self.hint = None
+
+        if self.message_timer > 0:
+            self.message_timer -= dt
+
+        if self.state == "playing":
+            self.time_left -= dt
+            if self.time_left <= 0:
+                self.time_left = 0
+                self.state = "lost"
+
+    # ---------- 绘制 ----------
+    def draw(self):
+        self.screen.fill(BG)
+
+        pygame.draw.rect(self.screen, PANEL,
+                         (BOARD_X - 10, BOARD_Y - 10, BOARD_W + 20, BOARD_H + 20),
+                         border_radius=20)
+
+        for r in range(1, ROWS + 1):
+            for c in range(1, COLS + 1):
+                if (r + c) % 2 == 0:
+                    x = BOARD_X + (c - 1) * TILE
+                    y = BOARD_Y + (r - 1) * TILE
+                    pygame.draw.rect(self.screen, GRID_LINE, (x, y, TILE, TILE))
+
+        for r in range(1, ROWS + 1):
+            for c in range(1, COLS + 1):
+                k = self.grid[r][c]
+                if k != -1:
+                    self.screen.blit(self.tile_surfs[k], cell_topleft(r, c))
+
+        if self.selected:
+            r, c = self.selected
+            x, y = cell_topleft(r, c)
+            pygame.draw.rect(self.screen, ACCENT,
+                             (x - 2, y - 2, TILE - 2, TILE - 2), 3,
+                             border_radius=16)
+
+        if self.hint:
+            for (r, c) in self.hint:
+                x, y = cell_topleft(r, c)
+                pygame.draw.rect(self.screen, HINT_COLOR,
+                                 (x - 2, y - 2, TILE - 2, TILE - 2), 3,
+                                 border_radius=16)
+
+        self._draw_effects()
+        self._draw_hud()
+
+        if self.message_timer > 0:
+            self._draw_center_message(self.message)
+        if self.state != "playing":
+            self._draw_gameover()
+
+    def _draw_effects(self):
+        for e in self.effects:
+            p = min(1.0, e["t"] / e["life"])
+
+            if e["type"] == "pop":
+                r, c = e["cell"]
+                cx, cy = cell_center(r, c)
+                base = self.tile_surfs[e["kind"]]
+                scale = 1.0 + 0.6 * p
+                w = max(4, int(base.get_width() * scale))
+                surf = pygame.transform.smoothscale(base, (w, w))
+                surf.set_alpha(int(255 * (1 - p)))
+                self.screen.blit(surf, surf.get_rect(center=(cx, cy)))
+
+            elif e["type"] == "path":
+                pts = [cell_center(r, c) for r, c in e["path"]]
+                if len(pts) < 2:
+                    continue
+                alpha = int(255 * (1 - p))
+                xs = [q[0] for q in pts]
+                ys = [q[1] for q in pts]
+                x0, y0 = min(xs) - 8, min(ys) - 8
+                w = max(xs) - x0 + 16
+                h = max(ys) - y0 + 16
+                layer = pygame.Surface((w, h), pygame.SRCALPHA)
+                pygame.draw.lines(layer, (*ACCENT, alpha), False,
+                                  [(q[0] - x0, q[1] - y0) for q in pts], 4)
+                self.screen.blit(layer, (x0, y0))
+
+    def _draw_hud(self):
+        pygame.draw.rect(self.screen, (34, 39, 54), (0, 0, WIDTH, HUD_H))
+        pygame.draw.line(self.screen, (58, 65, 86),
+                         (0, HUD_H - 1), (WIDTH, HUD_H - 1), 2)
+
+        score = self.f_mid.render(f"分数  {self.score}", True, TEXT)
+        self.screen.blit(score, (MARGIN, 14))
+
+        left = self.f_mid.render(f"剩余  {self.remaining()}", True, TEXT)
+        self.screen.blit(left, left.get_rect(topright=(WIDTH - MARGIN, 14)))
+
+        tcol = (255, 110, 110) if self.time_left < 30 else TEXT
+        tm = self.f_mid.render(f"时间  {int(self.time_left):03d}s", True, tcol)
+        self.screen.blit(tm, tm.get_rect(midtop=(WIDTH // 2, 14)))
+
+        tip = self.f_small.render(
+            "鼠标左键选牌  ·  R 重排  ·  H 提示  ·  N 新游戏",
+            True, (140, 148, 170))
+        self.screen.blit(tip, tip.get_rect(midtop=(WIDTH // 2, 50)))
+
+    def _draw_center_message(self, text):
+        surf = self.f_mid.render(text, True, (25, 25, 35))
+        pad_x, pad_y = 22, 12
+        box = pygame.Surface((surf.get_width() + pad_x * 2,
+                              surf.get_height() + pad_y * 2), pygame.SRCALPHA)
+        pygame.draw.rect(box, (*ACCENT, 235), box.get_rect(), border_radius=14)
+        box.blit(surf, surf.get_rect(center=box.get_rect().center))
+        self.screen.blit(box, box.get_rect(
+            center=(WIDTH // 2, BOARD_Y + BOARD_H // 2)))
+
+    def _draw_gameover(self):
+        veil = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        veil.fill((10, 12, 20, 180))
+        self.screen.blit(veil, (0, 0))
+
+        if self.state == "won":
+            title, color = "恭喜通关！", (110, 240, 180)
+        else:
+            title, color = "时间到，游戏结束", (255, 130, 130)
+
+        t = self.f_big.render(title, True, color)
+        self.screen.blit(t, t.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 55)))
+
+        s = self.f_mid.render(f"最终得分：{self.score}", True, TEXT)
+        self.screen.blit(s, s.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 5)))
+
+        r = self.f_small.render("点击任意位置 / 按 N 重新开始", True, (180, 186, 205))
+        self.screen.blit(r, r.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 50)))
+
+    # ---------- 主循环 ----------
+    def run(self):
+        while True:
+            dt = self.clock.tick(FPS) / 1000.0
+
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    if self.state == "playing":
+                        self.on_click(event.pos)
+                    else:
+                        self.new_game()
+
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        pygame.quit()
+                        sys.exit()
+                    elif event.key == pygame.K_n:
+                        self.new_game()
+                    elif event.key == pygame.K_r and self.state == "playing":
+                        self.do_reshuffle()
+                        self.set_message("已重排")
+                    elif event.key == pygame.K_h and self.state == "playing":
+                        self.show_hint()
+
+            self.update(dt)
+            self.draw()
+            pygame.display.flip()
+
+
+if __name__ == "__main__":
+    LianLianKan().run()
