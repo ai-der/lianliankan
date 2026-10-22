@@ -14,14 +14,14 @@
 - 源码在 [`mobile/`](mobile/) 目录，基于 pygbag 打包
 
 ## 项目结构
-lianliankan/
-├── lianliankan.py # 桌面版主程序
-├── tiles/ # 桌面版图片
-├── font.otf # 桌面版字体
-└── mobile/ # 手机网页版
-├── main.py # pygbag 入口
-├── linkgame.py # 手机端主程序
-└── embedded_tiles.py # 内嵌图片+字体
+* lianliankan/
+* lianliankan.py # 桌面版主程序
+* tiles/ # 桌面版图片
+* font.otf # 桌面版字体
+* mobile/ # 手机网页版
+  * main.py # pygbag 入口
+  * linkgame.py # 手机端主程序
+  * embedded_tiles.py # 内嵌图片+字体
 ## 下载即玩（推荐）
 
 不想装 Python？直接去 **[Releases](../../releases/latest)** 下载对应系统的压缩包，
