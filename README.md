@@ -9,7 +9,7 @@
 - 解压双击 `LianLianKan.exe`，无需安装任何环境
 
 ### 手机版（网页版）
-- 浏览器打开 **https://ai-der.github.io/lianliankan/**
+- 浏览器打开 **https://ai-der.github.io/lianliankan/docs/**
 - iOS / Android 通用，扫码即玩
 - 源码在 [`mobile/`](mobile/) 目录，基于 pygbag 打包
 
